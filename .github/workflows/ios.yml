@@ -1,0 +1,91 @@
+# Builds the iOS shell into an unsigned .ipa.
+#
+# Template, not an active workflow: this file lives in the monorepo, which has
+# no remote, and the owner's tools skip dotfiles. poc/shell/publish-ios.sh
+# copies it into the staging directory as .github/workflows/ios.yml, which is
+# where GitHub reads workflows from.
+#
+# No Mac in this project, so CI is the compiler. The result carries no
+# signature on purpose: Sideloadly (or rcodesign on Linux) signs it with a
+# personal Apple ID before installing. Nothing secret lives in this repo.
+
+name: ios
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Caches/org.swift.swiftpm.manifests
+          key: spm-${{ hashFiles('ios/project.yml') }}
+          restore-keys: spm-
+
+      - name: Generate project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Shell.xcodeproj \
+            -scheme Shell \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | tail -n 200
+
+      - name: Package ipa
+        working-directory: ios
+        run: |
+          APP=$(find build/Build/Products -maxdepth 3 -name "Shell.app" | head -n 1)
+          test -n "$APP" || { echo "no Shell.app produced"; exit 1; }
+          mkdir -p out/Payload
+          ditto "$APP" out/Payload/Shell.app
+          cd out && zip -qry Shell.ipa Payload
+          ls -la Shell.ipa
+
+      - name: Upload ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shell.ipa
+          path: ios/out/Shell.ipa
+          retention-days: 14
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-logs
+          path: ios/build.log
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,84 @@
+# XcodeGen spec for the iOS shell.
+#
+# The .xcodeproj is generated, never committed: a hand-written pbxproj cannot be
+# reviewed or merged without conflicts, and generating it from this file keeps
+# the sources and the settings in one readable place. CI runs
+# `xcodegen generate` before `xcodebuild`; locally, do the same.
+
+name: Shell
+
+options:
+  bundleIdPrefix: com.webshell
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "15.0"
+
+packages:
+  GoogleMobileAds:
+    url: https://github.com/googleads/swift-package-manager-google-mobile-ads
+    majorVersion: 13.0.0
+  GoogleUserMessagingPlatform:
+    url: https://github.com/googleads/swift-package-manager-google-user-messaging-platform
+    majorVersion: 3.0.0
+
+targets:
+  Shell:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      # The page is shipped as-is: one folder reference, so the bundle ends up
+      # with web/index.html and web/shell.js, the same files Android loads from
+      # assets/. Never a per-file list, the folder is the source of truth.
+      - path: ../web
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: GoogleMobileAds
+        product: GoogleMobileAds
+      - package: GoogleUserMessagingPlatform
+        product: GoogleUserMessagingPlatform
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.webshell.base
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+        # Simulator and device builds in CI are unsigned; a real device build
+        # needs a team id, which belongs in a local override, not here.
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Shell
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+        # Google's sample AdMob app id. Replace with the real one before any
+        # release build, together with the ad unit ids in Sources/AdsManager.swift.
+        GADApplicationIdentifier: ca-app-pub-3940256099942544~1458002511
+        NSUserTrackingUsageDescription: Your data is used to show relevant ads.
+        ITSAppUsesNonExemptEncryption: false
+
+schemes:
+  Shell:
+    build:
+      targets:
+        Shell: all
+    run:
+      config: Debug

@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shell</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 18px calc(24px + env(safe-area-inset-bottom));
+    font: 16px/1.45 system-ui, sans-serif;
+    background: #0d0f12; color: #f2f5f7;
+    padding-top: calc(24px + env(safe-area-inset-top));
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .02em; }
+  p.sub { margin: 0 0 20px; color: #9aa6b2; font-size: 13px; }
+  button {
+    display: block; width: 100%; margin: 0 0 10px; padding: 14px 16px;
+    font: inherit; font-weight: 600; text-align: left;
+    color: #0d0f12; background: #ffd12e; border: 0; border-radius: 10px;
+  }
+  button.ghost { color: #f2f5f7; background: #1c2230; }
+  button:active { transform: scale(.99); }
+  input {
+    display: block; width: 100%; margin: 0 0 10px; padding: 13px 16px;
+    font: inherit; font-size: 14px; color: #f2f5f7; background: #12161d;
+    border: 1px solid #2a3342; border-radius: 10px;
+  }
+  pre {
+    margin: 18px 0 0; padding: 12px; border-radius: 10px;
+    background: #12161d; color: #9ff2c0; font-size: 12px;
+    white-space: pre-wrap; word-break: break-word; min-height: 44px;
+  }
+
+@keyframes buzz {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+button.buzz { animation: buzz 0.28s ease-in-out; border-color: #fff; }
+</style>
+</head>
+<body>
+<h1>Shell</h1>
+<p class="sub" id="plat">detecting platform…</p>
+<p class="sub" id="view">viewport…</p>
+
+<button id="haptic">Haptic impact</button>
+<button id="share">Share</button>
+<button id="notify">Reminder in 2 min</button>
+<button id="ad" class="ghost">Show interstitial</button>
+<button id="reward" class="ghost">Show rewarded</button>
+<button id="banner" class="ghost">Show banner</button>
+<button id="info" class="ghost">Device info</button>
+
+<input id="url" value="https://example.com/" spellcheck="false" autocomplete="off">
+<button id="fetch" class="ghost">Fetch (no CORS)</button>
+
+<input id="checkout" placeholder="https://buy.stripe.com/test_..." spellcheck="false" autocomplete="off">
+<button id="pay" class="ghost">Checkout</button>
+
+<pre id="log"></pre>
+
+<script src="shell.js"></script>
+<script>
+(function () {
+  var log = document.getElementById("log");
+  function show(label, res) {
+    log.textContent = label + "\n" + JSON.stringify(res, null, 2);
+  }
+  function run(label, op, payload) {
+    return function () {
+      Shell.post(op, payload).then(function (r) { show(label + " -> " + Shell.platform, r); });
+    };
+  }
+
+  Shell.info().then(function (r) {
+    document.getElementById("plat").textContent =
+      Shell.platform + " · " + (r.data.platform || "?") + " " + (r.data.osVersion || "") +
+      " · ops: " + ((r.data.ops || []).length || 0);
+    show("device.info", r);
+  });
+
+  document.getElementById("haptic").onclick = function () {
+    var b = document.getElementById("haptic");
+    b.classList.remove("buzz");
+    void b.offsetWidth;
+    b.classList.add("buzz");
+    Shell.post("haptics.impact", { style: "heavy" }).then(function (r) {
+      show("haptics (phone buzzes, silent mode kills it)", r);
+    });
+  };
+  document.getElementById("share").onclick = run("share", "share", { text: "From the shell", url: location.href });
+  /* Fires in 1-2 minutes so a reminder can be checked without waiting all day.
+     schedule.add only takes HH:MM, so round "now + 2 min" up to a minute. */
+  function inTwoMinutes() {
+    var d = new Date(Date.now() + 2 * 60 * 1000);
+    return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+  }
+  document.getElementById("notify").onclick = function () {
+    var at = inTwoMinutes();
+    log.textContent = "notify: scheduling for " + at + " (in ~2 min)…";
+    Shell.schedule.add({
+      id: "later", title: "Reminder", body: "Two minutes are up", at: at, repeat: "once"
+    }).then(function (r) {
+      log.textContent += "\nschedule.add -> " + r.ok + " " + JSON.stringify(r.data) +
+        "  (armed for " + at + ")";
+    });
+  };
+  /* Ads are preloaded right after consent so a tap can show instantly. A
+     prefetched ad is single use: the host refills by itself once it is
+     dismissed, so nothing here polls. Show still runs with policy "lazy" as a
+     safety net -- an empty cache loads and shows instead of failing. */
+  var consent = null;
+  var adsState = { interstitial: "none", rewarded: "none", banner: "none" };
+
+  function paint() {
+    var btn = document.getElementById("reward");
+    var ready = adsState.rewarded === "ready";
+    btn.textContent = ready ? "Show rewarded (ready)"
+      : "Show rewarded (" + adsState.rewarded + ")";
+    btn.style.opacity = ready ? "1" : "0.45";
+  }
+
+  function refreshAds() {
+    return Shell.post("ads.state", {}).then(function (r) {
+      if (r.ok) {
+        adsState = {
+          interstitial: r.data.interstitial || "none",
+          rewarded: r.data.rewarded || "none",
+          banner: r.data.banner || "none"
+        };
+        paint();
+      }
+    });
+  }
+
+  function ensureConsent() {
+    if (!consent) consent = Shell.post("ads.consent", {});
+    return consent;
+  }
+
+  function preload(kind) {
+    return Shell.post("ads." + kind + ".load", {}).then(function (r) {
+      log.textContent += "\npreload " + kind + " -> " + r.ok + " " + JSON.stringify(r.data);
+      return refreshAds();
+    });
+  }
+
+  function adFlow(kind) {
+    return function () {
+      log.textContent = kind + ": showing…";
+      ensureConsent().then(function (c) {
+        if (!c.ok) { consent = null; log.textContent += "\nconsent -> " + JSON.stringify(c.data); return; }
+        return Shell.post("ads." + kind + ".show", { policy: "lazy", timeoutMs: 8000 })
+          .then(function (s) {
+            log.textContent += "\nshow -> " + s.ok + " " + JSON.stringify(s.data);
+            refreshAds();
+          });
+      });
+    };
+  }
+  document.getElementById("ad").onclick = adFlow("interstitial");
+  document.getElementById("reward").onclick = adFlow("rewarded");
+
+  /* The banner lives below the WebView, so showing it makes this page shorter
+     and hiding it gives the pixels back. Never an overlay. */
+  var bannerOn = false;
+  document.getElementById("banner").onclick = function () {
+    var btn = this;
+    var op = bannerOn ? "ads.banner.hide" : "ads.banner.show";
+    log.textContent += "\n" + op + "…";
+    Shell.post(op, {}).then(function (r) {
+      bannerOn = op === "ads.banner.show" && r.ok;
+      btn.textContent = bannerOn ? "Hide banner" : "Show banner";
+      log.textContent += " -> " + r.ok + " " + JSON.stringify(r.data);
+      refreshAds();
+    });
+  };
+
+  Shell.on("ads.event", function (d) {
+    log.textContent += "\nevent ads.event " + JSON.stringify(d);
+    if (d.format && d.state && adsState.hasOwnProperty(d.format)) {
+      adsState[d.format] = d.state;
+      paint();
+    }
+  });
+
+  Shell.on("viewport", function (d) {
+    document.getElementById("view").textContent =
+      Math.round(d.width) + "x" + Math.round(d.height) +
+      " (banner " + Math.round(d.banner || 0) + ")";
+  });
+
+  /* Consent first, then warm both formats. Failure is fine: the lazy show
+     retries on demand. */
+  ensureConsent().then(function (c) {
+    log.textContent = "consent -> " + c.ok + " " + JSON.stringify(c.data);
+    if (!c.ok) { consent = null; return; }
+    return preload("interstitial").then(function () { return preload("rewarded"); });
+  });
+  document.getElementById("info").onclick = function () { Shell.info().then(function (r) { show("device.info", r); }); };
+
+  /* http.fetch leaves the WebView: no CORS, no preflight, our own headers and
+     a cookie jar. What comes back is the raw body, so pages built by script
+     arrive empty. */
+  document.getElementById("fetch").onclick = function () {
+    var url = document.getElementById("url").value.trim();
+    log.textContent = "fetch " + url + "…";
+    Shell.post("http.fetch", {
+      url: url,
+      headers: { "User-Agent": "ShellBridge/1.0", "Accept": "text/html,*/*" }
+    }).then(function (r) {
+      if (!r.ok) { log.textContent += "\nhttp.fetch -> " + JSON.stringify(r.data); return; }
+      var d = r.data;
+      var body = d.body || ("base64 " + (d.bodyBase64 || "").length + " chars");
+      log.textContent += "\nstatus " + d.status + " · " + d.url +
+        " · " + body.length + " chars" + (d.truncated ? " (truncated)" : "") +
+        "\n\n" + body.slice(0, 1200);
+    });
+  };
+
+  /* pay.* asks the store first and falls back to a link. The store says why it
+     cannot answer, which the page needs to decide what to offer. */
+  document.getElementById("pay").onclick = function () {
+    var url = document.getElementById("checkout").value.trim();
+    log.textContent = "pay.status…";
+    Shell.post("pay.status", {}).then(function (r) {
+      var d = r.data || {};
+      var nativeOk = d.native && d.native.available;
+      log.textContent = "native " + JSON.stringify(d.native);
+      if (nativeOk) {
+        log.textContent += "\nnative billing would run here (not wired in this build)";
+        return;
+      }
+      log.textContent += "\nfallback: checkout link";
+      return Shell.post("pay.checkout", { url: url, label: "demo" }).then(function (c) {
+        log.textContent += "\npay.checkout -> " + JSON.stringify(c.data);
+      });
+    });
+  };
+
+  /* Fires when the app is visible again. It only proves the browser came back,
+     never that the payment happened: that needs a server. */
+  Shell.on("pay.return", function (d) {
+    show("event pay.return (unverified)", d);
+  });
+
+  Shell.on("keyboard", function (d) {
+    show("event keyboard", d);
+    document.activeElement && document.activeElement.scrollIntoView({ block: "center" });
+  });
+})();
+</script>
+</body>
+</html>
